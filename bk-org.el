@@ -478,3 +478,101 @@
       '(("" "org-preamble-xelatex" t)))
 (add-hook 'org-mode-hook 'turn-on-auto-fill 'append)
 )
+(defun org-repair-property-drawers ()
+  "Fix properties drawers in current buffer.
+ Ignore non Org buffers."
+  (when (eq major-mode 'org-mode)
+    (org-with-wide-buffer
+     (goto-char (point-min))
+     (let ((case-fold-search t)
+           (inline-re (and (featurep 'org-inlinetask)
+                           (concat (org-inlinetask-outline-regexp)
+                                   "END[ \t]*$"))))
+       (org-map-entries
+        (lambda ()
+          (unless (and inline-re (org-looking-at-p inline-re))
+            (save-excursion
+              (let ((end (save-excursion (outline-next-heading) (point))))
+                (forward-line)
+                (when (org-looking-at-p org-planning-line-re) (forward-line))
+                (when (and (< (point) end)
+                           (not (org-looking-at-p org-property-drawer-re))
+                           (save-excursion
+                             (and (re-search-forward org-property-drawer-re end t)
+                                  (eq (org-element-type
+                                       (save-match-data (org-element-at-point)))
+                                      'drawer))))
+                  (insert (delete-and-extract-region
+                           (match-beginning 0)
+                           (min (1+ (match-end 0)) end)))
+                  (unless (bolp) (insert "\n"))))))))))))
+
+(defcustom org-mactions-numbered-action-format "TODO Action %d. \\action{?}"
+  "Default structure of the headling of a new action.
+    %d will become the number of the action."
+  :group 'org-edit-structure
+  :type 'string)
+
+(defcustom org-mactions-change-id-on-copy t
+  "Non-nil means make new IDs in copied actions.
+If an action copied with the command `org-mactions-collect-todos-in-subtree'
+contains an ID, that ID will be replaced with a new one."
+  :group 'org-edit-structure
+  :type 'string)
+
+(defun org-mactions-new-numbered-action (&optional inline)
+  "Insert a new numbered action, using `org-mactions-numbered-action-format'.
+    With prefix argument, insert an inline task."
+  (interactive "P")
+  (let* ((num (let ((re "\\`#\\([0-9]+\\)\\'"))
+                (1+ (apply 'max 0
+                           (mapcar
+                            (lambda (e)
+                              (if (string-match re (car e))
+                                  (string-to-number (match-string 1 (car e)))
+                                0))
+                            (org-get-buffer-tags))))))
+         (tag (concat "#" (number-to-string num))))
+    (if inline
+        (org-inlinetask-insert-task)
+      (org-insert-heading 'force))
+    (unless (eql (char-before) ?\ ) (insert " "))
+    (insert (format org-mactions-numbered-action-format num))
+    (org-toggle-tag tag 'on)
+    (if (= (point-max) (point-at-bol))
+        (save-excursion (goto-char (point-at-eol)) (insert "\n")))
+    (unless (eql (char-before) ?\ ) (insert " "))))
+
+(defun org-mactions-collect-todos-in-subtree ()
+  "Collect all TODO items in the current subtree into a flat list."
+  (interactive)
+  (let ((buf (get-buffer-create "Org TODO Collect"))
+        (cnt 0) beg end string s)
+    (with-current-buffer buf (erase-buffer) (org-mode))
+    (org-map-entries
+     (lambda ()
+       (setq beg (point) end (org-end-of-subtree t t) cnt (1+ cnt)
+             string (buffer-substring beg end)
+             s 0)
+       (when org-mactions-change-id-on-copy
+         (while (string-match "^\\([ \t]*:ID:\\)[ \t\n]+\\([^ \t\n]+\\)[ \t]*$"
+                              string s)
+           (setq s (match-end 1)
+                 string (replace-match (concat "\\1 "
+                                               (save-match-data (org-id-new)))
+                                       t nil string))))
+       (with-current-buffer buf (org-paste-subtree 1 string)
+                            (goto-char (point-max))))
+     (format "TODO={%s}" (regexp-opt org-not-done-keywords))
+     'tree)
+    (if (= cnt 0)
+        (message "No TODO items in subtree")
+      (message "%d TODO entries copied to kill ring" cnt)
+      (prog1 (with-current-buffer buf
+               (kill-new (buffer-string)))
+        (kill-buffer buf)))))
+
+(defun my-copy-rectangle (start end)
+  "Copy the region-rectangle instead of `kill-rectangle'."
+  (interactive "r")
+  (setq killed-rectangle (extract-rectangle start end)))
